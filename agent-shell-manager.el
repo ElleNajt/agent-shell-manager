@@ -25,7 +25,7 @@
 ;;   M-x agent-shell-manager-toggle
 ;;
 ;; Key bindings in the manager buffer:
-;;   RET     - Switch to agent-shell buffer (with workspace switching)
+;;   RET     - Switch to agent-shell buffer (respects workspace switching setting)
 ;;   S-RET   - Switch to agent-shell buffer (without workspace switching)
 ;;   g       - Refresh buffer list
 ;;   k       - Kill agent-shell process
@@ -57,6 +57,14 @@ Can be 'left, 'right, 'top, or 'bottom."
           (const :tag "Bottom" bottom))
   :group 'agent-shell-manager)
 
+(defcustom agent-shell-manager-switch-workspace t
+  "Whether to automatically switch workspaces when navigating to a buffer.
+When non-nil, pressing RET will switch to the workspace containing the
+buffer's project before displaying it. When nil, buffers are displayed
+in the current workspace without switching."
+  :type 'boolean
+  :group 'agent-shell-manager)
+
 (defvar agent-shell-manager-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
@@ -86,7 +94,7 @@ Can be 'left, 'right, 'top, or 'bottom."
   "Major mode for listing agent-shell buffers.
 
 Key bindings:
-\\[agent-shell-manager-goto] - Switch to agent-shell buffer at point (with workspace switching)
+\\[agent-shell-manager-goto] - Switch to agent-shell buffer at point (respects workspace switching setting)
 \\[agent-shell-manager-goto-no-workspace-switch] - Switch to agent-shell buffer at point (without workspace switching)
 \\[agent-shell-manager-refresh] - Refresh the buffer list
 \\[agent-shell-manager-kill] - Kill the agent-shell process at point
@@ -294,7 +302,7 @@ Returns the workspace name if found, nil otherwise."
 (defun agent-shell-manager-goto (&optional no-workspace-switch)
   "Go to the agent-shell buffer at point without closing the manager.
 If the buffer belongs to a workspace, switch to that workspace first
-unless NO-WORKSPACE-SWITCH is non-nil.
+unless NO-WORKSPACE-SWITCH is non-nil or `agent-shell-manager-switch-workspace' is nil.
 If the buffer is already visible, switch to it.
 Otherwise, if another agent-shell window is open, reuse it."
   (interactive "P")
@@ -302,7 +310,8 @@ Otherwise, if another agent-shell window is open, reuse it."
     (if (buffer-live-p buffer)
         (progn
           ;; Try to switch to the workspace containing this buffer
-          (unless no-workspace-switch
+          (when (and agent-shell-manager-switch-workspace
+                     (not no-workspace-switch))
             (when-let ((workspace-name (agent-shell-manager--find-workspace-for-buffer buffer)))
               (when (fboundp 'persp-frame-switch)
                 (persp-frame-switch workspace-name))))
