@@ -25,18 +25,19 @@
 ;;   M-x agent-shell-manager-toggle
 ;;
 ;; Key bindings in the manager buffer:
-;;   RET   - Switch to agent-shell buffer
-;;   g     - Refresh buffer list
-;;   k     - Kill agent-shell process
-;;   c     - Create new agent-shell
-;;   r     - Restart agent-shell
-;;   d     - Delete all killed buffers
-;;   m     - Set session mode
-;;   M     - Cycle session mode
+;;   RET     - Switch to agent-shell buffer (with workspace switching)
+;;   S-RET   - Switch to agent-shell buffer (without workspace switching)
+;;   g       - Refresh buffer list
+;;   k       - Kill agent-shell process
+;;   c       - Create new agent-shell
+;;   r       - Restart agent-shell
+;;   d       - Delete all killed buffers
+;;   m       - Set session mode
+;;   M       - Cycle session mode
 ;;   C-c C-c - Interrupt agent
-;;   t     - View traffic logs
-;;   l     - Toggle logging
-;;   q     - Quit manager window
+;;   t       - View traffic logs
+;;   l       - Toggle logging
+;;   q       - Quit manager window
 
 ;;; Code:
 
@@ -60,6 +61,7 @@ Can be 'left, 'right, 'top, or 'bottom."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     (define-key map (kbd "RET") #'agent-shell-manager-goto)
+    (define-key map (kbd "S-<return>") #'agent-shell-manager-goto-no-workspace-switch)
     (define-key map (kbd "g") #'agent-shell-manager-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "k") #'agent-shell-manager-kill)
@@ -84,7 +86,8 @@ Can be 'left, 'right, 'top, or 'bottom."
   "Major mode for listing agent-shell buffers.
 
 Key bindings:
-\\[agent-shell-manager-goto] - Switch to agent-shell buffer at point
+\\[agent-shell-manager-goto] - Switch to agent-shell buffer at point (with workspace switching)
+\\[agent-shell-manager-goto-no-workspace-switch] - Switch to agent-shell buffer at point (without workspace switching)
 \\[agent-shell-manager-refresh] - Refresh the buffer list
 \\[agent-shell-manager-kill] - Kill the agent-shell process at point
 \\[agent-shell-manager-new] - Create a new agent-shell
@@ -288,19 +291,21 @@ Returns the workspace name if found, nil otherwise."
                                      (persp-buffers persp)))
                  return persp-name)))))
 
-(defun agent-shell-manager-goto ()
+(defun agent-shell-manager-goto (&optional no-workspace-switch)
   "Go to the agent-shell buffer at point without closing the manager.
-If the buffer belongs to a workspace, switch to that workspace first.
+If the buffer belongs to a workspace, switch to that workspace first
+unless NO-WORKSPACE-SWITCH is non-nil.
 If the buffer is already visible, switch to it.
 Otherwise, if another agent-shell window is open, reuse it."
-  (interactive)
+  (interactive "P")
   (when-let ((buffer (tabulated-list-get-id)))
     (if (buffer-live-p buffer)
         (progn
           ;; Try to switch to the workspace containing this buffer
-          (when-let ((workspace-name (agent-shell-manager--find-workspace-for-buffer buffer)))
-            (when (fboundp 'persp-frame-switch)
-              (persp-frame-switch workspace-name)))
+          (unless no-workspace-switch
+            (when-let ((workspace-name (agent-shell-manager--find-workspace-for-buffer buffer)))
+              (when (fboundp 'persp-frame-switch)
+                (persp-frame-switch workspace-name))))
           
           ;; Now display the buffer
           (let ((buffer-window (get-buffer-window buffer t))
@@ -329,6 +334,13 @@ Otherwise, if another agent-shell window is open, reuse it."
                 ;; No existing agent-shell window, use default behavior
                 (agent-shell--display-buffer buffer))))))
       (user-error "Buffer no longer exists"))))
+
+(defun agent-shell-manager-goto-no-workspace-switch ()
+  "Go to the agent-shell buffer at point without switching workspaces.
+If the buffer is already visible, switch to it.
+Otherwise, if another agent-shell window is open, reuse it."
+  (interactive)
+  (agent-shell-manager-goto t))
 
 (defun agent-shell-manager-kill ()
   "Kill the agent-shell process at point."
