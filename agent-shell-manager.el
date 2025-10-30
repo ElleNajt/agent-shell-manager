@@ -269,38 +269,65 @@ Returns one of: waiting, ready, working, killed, or unknown."
       (setq tabulated-list-entries (agent-shell-manager--entries))
       (tabulated-list-print t))))
 
+(defun agent-shell-manager--find-workspace-for-buffer (buffer)
+  "Find the workspace/perspective for BUFFER.
+Looks for a workspace containing buffers from the same directory as BUFFER.
+Returns the workspace name if found, nil otherwise."
+  (when (featurep 'persp-mode)
+    (let ((buffer-dir (with-current-buffer buffer default-directory)))
+      (when buffer-dir
+        (cl-loop for persp-name in (persp-names)
+                 for persp = (persp-get-by-name persp-name)
+                 when (and persp
+                           ;; Check if any buffer in this workspace is from the same directory
+                           (seq-find (lambda (b)
+                                       (and (buffer-live-p b)
+                                            (buffer-local-value 'default-directory b)
+                                            (string-prefix-p buffer-dir
+                                                             (buffer-local-value 'default-directory b))))
+                                     (persp-buffers persp)))
+                 return persp-name)))))
+
 (defun agent-shell-manager-goto ()
   "Go to the agent-shell buffer at point without closing the manager.
+If the buffer belongs to a workspace, switch to that workspace first.
 If the buffer is already visible, switch to it.
 Otherwise, if another agent-shell window is open, reuse it."
   (interactive)
   (when-let ((buffer (tabulated-list-get-id)))
     (if (buffer-live-p buffer)
-        (let ((buffer-window (get-buffer-window buffer t))
-              (agent-shell-window nil))
-          (cond
-           ;; If the buffer is already visible, just switch to it
-           (buffer-window
-            (select-window buffer-window))
-           
-           ;; Otherwise, find an existing agent-shell window to reuse
-           (t
-            (walk-windows
-             (lambda (win)
-               (when (and (not agent-shell-window)
-                          (not (eq win (selected-window)))
-                          (with-current-buffer (window-buffer win)
-                            (derived-mode-p 'agent-shell-mode)))
-                 (setq agent-shell-window win)))
-             nil t)
-            
-            (if agent-shell-window
-                ;; Reuse the existing agent-shell window
-                (progn
-                  (set-window-buffer agent-shell-window buffer)
-                  (select-window agent-shell-window))
-              ;; No existing agent-shell window, use default behavior
-              (agent-shell--display-buffer buffer)))))
+        (progn
+          ;; Try to switch to the workspace containing this buffer
+          (when-let ((workspace-name (agent-shell-manager--find-workspace-for-buffer buffer)))
+            (when (fboundp 'persp-frame-switch)
+              (persp-frame-switch workspace-name)))
+          
+          ;; Now display the buffer
+          (let ((buffer-window (get-buffer-window buffer t))
+                (agent-shell-window nil))
+            (cond
+             ;; If the buffer is now visible (after workspace switch), switch to it
+             (buffer-window
+              (select-window buffer-window))
+             
+             ;; Otherwise, find an existing agent-shell window to reuse
+             (t
+              (walk-windows
+               (lambda (win)
+                 (when (and (not agent-shell-window)
+                            (not (eq win (selected-window)))
+                            (with-current-buffer (window-buffer win)
+                              (derived-mode-p 'agent-shell-mode)))
+                   (setq agent-shell-window win)))
+               nil t)
+              
+              (if agent-shell-window
+                  ;; Reuse the existing agent-shell window
+                  (progn
+                    (set-window-buffer agent-shell-window buffer)
+                    (select-window agent-shell-window))
+                ;; No existing agent-shell window, use default behavior
+                (agent-shell--display-buffer buffer))))))
       (user-error "Buffer no longer exists"))))
 
 (defun agent-shell-manager-kill ()
