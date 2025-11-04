@@ -444,22 +444,25 @@ Otherwise, if another agent-shell window is open, reuse it."
   (agent-shell-manager-goto t))
 
 (defun agent-shell-manager-kill ()
-  "Kill the agent-shell process at point."
+  "Kill the agent-shell process and buffer at point."
   (interactive)
   (when-let ((buffer (tabulated-list-get-id)))
     (unless (buffer-live-p buffer)
       (user-error "Buffer no longer exists"))
-    (when (yes-or-no-p (format "Kill agent-shell process in %s? " (buffer-name buffer)))
-      (with-current-buffer buffer
-        (when (and (boundp 'agent-shell--state)
-                   (map-elt agent-shell--state :client)
-                   (map-nested-elt agent-shell--state '(:client :process)))
-          (let ((proc (map-nested-elt agent-shell--state '(:client :process))))
-            (when (process-live-p proc)
-              (comint-send-eof)
-              (message "Sent EOF to agent-shell process in %s" (buffer-name buffer))))))
-      ;; Give the process a moment to update its status before refreshing
-      (run-with-timer 0.1 nil #'agent-shell-manager-refresh))))
+    (when (yes-or-no-p (format "Kill agent-shell buffer %s? " (buffer-name buffer)))
+      (let ((buffer-name (buffer-name buffer)))
+        (with-current-buffer buffer
+          (when (and (boundp 'agent-shell--state)
+                     (map-elt agent-shell--state :client)
+                     (map-nested-elt agent-shell--state '(:client :process)))
+            (let ((proc (map-nested-elt agent-shell--state '(:client :process))))
+              (when (process-live-p proc)
+                (kill-process proc)))))
+        ;; Kill the buffer
+        (kill-buffer buffer)
+        (message "Killed agent-shell buffer %s" buffer-name)
+        ;; Refresh immediately
+        (agent-shell-manager-refresh)))))
 
 (defun agent-shell-manager-new ()
   "Create a new agent-shell."
