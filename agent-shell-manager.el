@@ -15,11 +15,18 @@
 ;; Features:
 ;; - View all agent-shell buffers in a tabulated list
 ;; - See real-time status (ready, working, waiting, initializing, killed)
+;; - Track buffer visit history and last activity timestamps
+;; - Display buffers sorted by most recent activity
 ;; - Kill, restart, or create new agent-shells
 ;; - Manage session modes
 ;; - View traffic logs for debugging
 ;; - Auto-refresh every 2 seconds
 ;; - Killed processes are displayed at the bottom in red
+;;
+;; Buffer History Tracking:
+;; - First visit timestamp: recorded when navigating to a buffer via RET/S-RET
+;; - Last activity timestamp: updated whenever output is received in the buffer
+;; - Buffers are sorted by last activity (most recent first)
 ;;
 ;; Usage:
 ;;   M-x agent-shell-manager-toggle
@@ -90,6 +97,12 @@ in the current workspace without switching."
 (defvar agent-shell-manager--global-buffer nil
   "The global manager buffer for agent-shell buffer list.")
 
+(defvar agent-shell-manager--buffer-history nil
+  "Alist tracking buffer visit history.
+Each entry is (BUFFER-NAME . PLIST) where PLIST contains:
+  :first-visited - timestamp of first visit
+  :last-activity - timestamp of most recent message/activity")
+
 (define-derived-mode agent-shell-manager-mode tabulated-list-mode "Agent-Shell-Buffers"
   "Major mode for listing agent-shell buffers.
 
@@ -110,12 +123,13 @@ Key bindings:
 
 \\{agent-shell-manager-mode-map}"
   (setq tabulated-list-format
-        [("Buffer" 60 t)
+        [("Buffer" 45 t)
          ("Status" 15 t)
          ("Session" 10 t)
-         ("Mode" 15 t)])
+         ("Mode" 15 t)
+         ("Last Activity" 20 agent-shell-manager--sort-by-time)])
   (setq tabulated-list-padding 2)
-  (setq tabulated-list-sort-key (cons "Buffer" nil))
+  (setq tabulated-list-sort-key (cons "Last Activity" nil))
   (tabulated-list-init-header)
   
   ;; Set up auto-refresh timer (refresh every 2 seconds)
@@ -128,7 +142,24 @@ Key bindings:
               (when agent-shell-manager--refresh-timer
                 (cancel-timer agent-shell-manager--refresh-timer)
                 (setq agent-shell-manager--refresh-timer nil)))
-            nil t))
+            nil t)
+  
+  ;; Set up evil keybindings if evil is loaded
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* 'normal agent-shell-manager-mode-map
+      (kbd "RET") #'agent-shell-manager-goto
+      (kbd "S-<return>") #'agent-shell-manager-goto-no-workspace-switch
+      (kbd "g") #'agent-shell-manager-refresh
+      (kbd "q") #'quit-window
+      (kbd "k") #'agent-shell-manager-kill
+      (kbd "c") #'agent-shell-manager-new
+      (kbd "r") #'agent-shell-manager-restart
+      (kbd "d") #'agent-shell-manager-delete-killed
+      (kbd "m") #'agent-shell-manager-set-mode
+      (kbd "M") #'agent-shell-manager-cycle-mode
+      (kbd "C-c C-c") #'agent-shell-manager-interrupt
+      (kbd "t") #'agent-shell-manager-view-traffic
+      (kbd "l") #'agent-shell-manager-toggle-logging)))
 
 (defun agent-shell-manager--get-status (buffer)
   "Get the current status of agent-shell BUFFER.
@@ -225,6 +256,75 @@ Returns one of: waiting, ready, working, killed, or unknown."
           (match-string 1 buffer-name)
         "-"))))
 
+(defun agent-shell-manager--record-visit (buffer-name)
+  "Record that BUFFER-NAME was visited.
+Sets first-visited timestamp if not already set."
+  (let ((entry (assoc buffer-name agent-shell-manager--buffer-history)))
+    (if entry
+        ;; Entry exists, ensure first-visited is set
+        (unless (plist-get (cdr entry) :first-visited)
+          (setcdr entry (plist-put (cdr entry) :first-visited (current-time))))
+      ;; New entry
+      (push (cons buffer-name (list :first-visited (current-time)))
+            agent-shell-manager--buffer-history))))
+
+(defun agent-shell-manager--record-activity (buffer-name)
+  "Record activity in BUFFER-NAME.
+Updates last-activity timestamp and ensures first-visited is set."
+  (let ((entry (assoc buffer-name agent-shell-manager--buffer-history)))
+    (if entry
+        ;; Update existing entry
+        (progn
+          (unless (plist-get (cdr entry) :first-visited)
+            (setcdr entry (plist-put (cdr entry) :first-visited (current-time))))
+          (setcdr entry (plist-put (cdr entry) :last-activity (current-time))))
+      ;; New entry with both timestamps
+      (let ((now (current-time)))
+        (push (cons buffer-name (list :first-visited now :last-activity now))
+              agent-shell-manager--buffer-history)))))
+
+(defun agent-shell-manager--get-last-activity (buffer-name)
+  "Get last activity timestamp for BUFFER-NAME.
+Returns nil if no activity recorded."
+  (when-let ((entry (assoc buffer-name agent-shell-manager--buffer-history)))
+    (plist-get (cdr entry) :last-activity)))
+
+(defun agent-shell-manager--format-time-ago (timestamp)
+  "Format TIMESTAMP as a relative time string (e.g., '2h ago', '5m ago').
+Returns '-' if TIMESTAMP is nil."
+  (if (null timestamp)
+      "-"
+    (let* ((now (current-time))
+           (diff (time-subtract now timestamp))
+           (seconds (time-to-seconds diff)))
+      (cond
+       ((< seconds 60) (format "%ds ago" (floor seconds)))
+       ((< seconds 3600) (format "%dm ago" (floor (/ seconds 60))))
+       ((< seconds 86400) (format "%dh ago" (floor (/ seconds 3600))))
+       (t (format "%dd ago" (floor (/ seconds 86400))))))))
+
+(defun agent-shell-manager--sort-by-time (a b)
+  "Sort function for Last Activity column.
+A and B are entry rows. Sorts by timestamp (most recent first)."
+  ;; Extract the timestamp from the text properties
+  (let ((time-a (get-text-property 0 'timestamp (aref (cadr a) 4)))
+        (time-b (get-text-property 0 'timestamp (aref (cadr b) 4))))
+    (cond
+     ;; Both have timestamps - compare them (most recent first)
+     ((and time-a time-b) (time-less-p time-b time-a))
+     ;; Only a has timestamp - a comes first
+     (time-a t)
+     ;; Only b has timestamp - b comes first
+     (time-b nil)
+     ;; Neither has timestamp - keep current order
+     (t nil))))
+
+(defun agent-shell-manager--track-activity ()
+  "Track activity in the current buffer.
+Intended to be called from agent-shell hooks."
+  (when (derived-mode-p 'agent-shell-mode)
+    (agent-shell-manager--record-activity (buffer-name))))
+
 (defun agent-shell-manager--status-face (status)
   "Return face for STATUS string."
   (cond
@@ -246,30 +346,19 @@ Returns one of: waiting, ready, working, killed, or unknown."
                      (let* ((buffer (get-buffer buffer-name))
                             (status (agent-shell-manager--get-status buffer))
                             (session (agent-shell-manager--get-session-status buffer))
-                            (mode (agent-shell-manager--get-session-mode buffer)))
+                            (mode (agent-shell-manager--get-session-mode buffer))
+                            (last-activity (agent-shell-manager--get-last-activity buffer-name))
+                            (activity-str (agent-shell-manager--format-time-ago last-activity)))
                        (list buffer
                              (vector
                               buffer-name
                               (propertize status 'face (agent-shell-manager--status-face status))
                               session
-                              mode))))
+                              mode
+                              ;; Store timestamp in text property for sorting
+                              (propertize activity-str 'timestamp last-activity)))))
                    buffers)))
-    ;; Sort entries: killed processes go to the bottom
-    (sort entries
-          (lambda (a b)
-            (let ((status-a (aref (cadr a) 1))
-                  (status-b (aref (cadr b) 1)))
-              ;; Remove text properties to get plain status string
-              (setq status-a (substring-no-properties status-a))
-              (setq status-b (substring-no-properties status-b))
-              (cond
-               ;; Both killed or both not killed - maintain original order (stable)
-               ((and (string= status-a "killed") (string= status-b "killed")) nil)
-               ((and (not (string= status-a "killed")) (not (string= status-b "killed"))) nil)
-               ;; a is killed, b is not - a goes after b
-               ((string= status-a "killed") nil)
-               ;; b is killed, a is not - a goes before b
-               (t t)))))))
+    entries))
 
 (defun agent-shell-manager-refresh ()
   "Refresh the buffer list."
@@ -309,6 +398,9 @@ Otherwise, if another agent-shell window is open, reuse it."
   (when-let ((buffer (tabulated-list-get-id)))
     (if (buffer-live-p buffer)
         (progn
+          ;; Record that this buffer was visited
+          (agent-shell-manager--record-visit (buffer-name buffer))
+          
           ;; Try to switch to the workspace containing this buffer
           (when (and agent-shell-manager-switch-workspace
                      (not no-workspace-switch))
@@ -486,6 +578,12 @@ Kills the current process and starts a new one with the same config if possible.
   (agent-shell-toggle-logging)
   (agent-shell-manager-refresh))
 
+(defun agent-shell-manager--track-output (output)
+  "Hook function to track activity when output is received.
+OUTPUT is the string inserted by comint."
+  (agent-shell-manager--track-activity)
+  output)
+
 ;;;###autoload
 (defun agent-shell-manager-toggle ()
   "Toggle the agent-shell buffer list window.
@@ -517,6 +615,27 @@ The position of the window is controlled by `agent-shell-manager-side'."
         ;; Make the window dedicated so it can't be used for other buffers
         (set-window-dedicated-p window t)
         (select-window window)))))
+
+;;;###autoload
+(defun agent-shell-manager-setup-hooks ()
+  "Set up hooks to track activity in agent-shell buffers.
+Should be called after agent-shell-mode is loaded."
+  (add-hook 'agent-shell-mode-hook
+            (lambda ()
+              (add-hook 'comint-output-filter-functions
+                        #'agent-shell-manager--track-output
+                        nil t))))
+
+;; Set up the hooks when this file is loaded
+(with-eval-after-load 'agent-shell
+  (agent-shell-manager-setup-hooks)
+  ;; Also add to existing agent-shell buffers
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'agent-shell-mode)
+        (add-hook 'comint-output-filter-functions
+                  #'agent-shell-manager--track-output
+                  nil t)))))
 
 (provide 'agent-shell-manager)
 
