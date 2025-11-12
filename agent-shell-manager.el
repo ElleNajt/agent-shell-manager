@@ -17,6 +17,7 @@
 ;; - See real-time status (ready, working, waiting, initializing, killed)
 ;; - Track buffer visit history and last activity timestamps
 ;; - Display buffers sorted by most recent activity
+;; - Show the last prompt sent to each agent
 ;; - Kill, restart, or create new agent-shells
 ;; - Manage session modes
 ;; - View traffic logs for debugging
@@ -26,6 +27,7 @@
 ;; Buffer History Tracking:
 ;; - First visit timestamp: recorded when navigating to a buffer via RET/S-RET
 ;; - Last activity timestamp: updated whenever output is received in the buffer
+;; - Last prompt: displays the most recent prompt sent to the agent (truncated to 200 chars)
 ;; - Buffers are sorted by last activity (most recent first)
 ;;
 ;; Usage:
@@ -101,7 +103,8 @@ in the current workspace without switching."
   "Alist tracking buffer visit history.
 Each entry is (BUFFER-NAME . PLIST) where PLIST contains:
   :first-visited - timestamp of first visit
-  :last-activity - timestamp of most recent message/activity")
+  :last-activity - timestamp of most recent message/activity
+  :last-prompt - text of the last prompt sent to the agent")
 
 (define-derived-mode agent-shell-manager-mode tabulated-list-mode "Agent-Shell-Buffers"
   "Major mode for listing agent-shell buffers.
@@ -123,11 +126,12 @@ Key bindings:
 
 \\{agent-shell-manager-mode-map}"
   (setq tabulated-list-format
-        [("Buffer" 45 t)
-         ("Status" 15 t)
-         ("Session" 10 t)
-         ("Mode" 15 t)
-         ("Last Activity" 20 agent-shell-manager--sort-by-time)])
+        [("Buffer" 30 t)
+         ("Status" 12 t)
+         ("Session" 8 t)
+         ("Mode" 12 t)
+         ("Last Activity" 15 agent-shell-manager--sort-by-time)
+         ("Last Prompt" 50 t)])
   (setq tabulated-list-padding 2)
   (setq tabulated-list-sort-key (cons "Last Activity" nil))
   (tabulated-list-init-header)
@@ -283,11 +287,42 @@ Updates last-activity timestamp and ensures first-visited is set."
         (push (cons buffer-name (list :first-visited now :last-activity now))
               agent-shell-manager--buffer-history)))))
 
+(defun agent-shell-manager--record-prompt (buffer-name prompt)
+  "Record that PROMPT was sent in BUFFER-NAME.
+Truncates prompt to first 200 characters for display."
+  (let* ((entry (assoc buffer-name agent-shell-manager--buffer-history))
+         (truncated-prompt (if (> (length prompt) 200)
+                               (concat (substring prompt 0 197) "...")
+                             prompt))
+         ;; Remove newlines and extra whitespace for cleaner display
+         (clean-prompt (replace-regexp-in-string "[\n\r]+" " " truncated-prompt))
+         (clean-prompt (replace-regexp-in-string "[ \t]+" " " clean-prompt)))
+    (if entry
+        ;; Update existing entry
+        (progn
+          (unless (plist-get (cdr entry) :first-visited)
+            (setcdr entry (plist-put (cdr entry) :first-visited (current-time))))
+          (setcdr entry (plist-put (cdr entry) :last-activity (current-time)))
+          (setcdr entry (plist-put (cdr entry) :last-prompt clean-prompt)))
+      ;; New entry with all fields
+      (let ((now (current-time)))
+        (push (cons buffer-name (list :first-visited now 
+                                      :last-activity now
+                                      :last-prompt clean-prompt))
+              agent-shell-manager--buffer-history)))))
+
 (defun agent-shell-manager--get-last-activity (buffer-name)
   "Get last activity timestamp for BUFFER-NAME.
 Returns nil if no activity recorded."
   (when-let ((entry (assoc buffer-name agent-shell-manager--buffer-history)))
     (plist-get (cdr entry) :last-activity)))
+
+(defun agent-shell-manager--get-last-prompt (buffer-name)
+  "Get last prompt text for BUFFER-NAME.
+Returns '-' if no prompt recorded."
+  (if-let ((entry (assoc buffer-name agent-shell-manager--buffer-history)))
+      (or (plist-get (cdr entry) :last-prompt) "-")
+    "-"))
 
 (defun agent-shell-manager--format-time-ago (timestamp)
   "Format TIMESTAMP as a relative time string (e.g., '2h ago', '5m ago').
@@ -348,7 +383,8 @@ Intended to be called from agent-shell hooks."
                             (session (agent-shell-manager--get-session-status buffer))
                             (mode (agent-shell-manager--get-session-mode buffer))
                             (last-activity (agent-shell-manager--get-last-activity buffer-name))
-                            (activity-str (agent-shell-manager--format-time-ago last-activity)))
+                            (activity-str (agent-shell-manager--format-time-ago last-activity))
+                            (last-prompt (agent-shell-manager--get-last-prompt buffer-name)))
                        (list buffer
                              (vector
                               buffer-name
@@ -356,7 +392,8 @@ Intended to be called from agent-shell hooks."
                               session
                               mode
                               ;; Store timestamp in text property for sorting
-                              (propertize activity-str 'timestamp last-activity)))))
+                              (propertize activity-str 'timestamp last-activity)
+                              last-prompt))))
                    buffers)))
     entries))
 
@@ -587,6 +624,21 @@ OUTPUT is the string inserted by comint."
   (agent-shell-manager--track-activity)
   output)
 
+(defun agent-shell-manager--track-prompt (&rest args)
+  "Track when a prompt is sent to the agent.
+ARGS are the keyword arguments passed to `agent-shell--send-command'.
+Extracts the :prompt keyword argument."
+  (when (derived-mode-p 'agent-shell-mode)
+    (when-let* ((prompt (plist-get args :prompt))
+                ;; Extract text content if prompt is a string
+                (prompt-text (if (stringp prompt)
+                                 prompt
+                               ;; If it's structured content, try to extract text
+                               (condition-case nil
+                                   (substring-no-properties prompt)
+                                 (error nil)))))
+      (agent-shell-manager--record-prompt (buffer-name) prompt-text))))
+
 ;;;###autoload
 (defun agent-shell-manager-toggle ()
   "Toggle the agent-shell buffer list window.
@@ -627,7 +679,9 @@ Should be called after agent-shell-mode is loaded."
             (lambda ()
               (add-hook 'comint-output-filter-functions
                         #'agent-shell-manager--track-output
-                        nil t))))
+                        nil t)))
+  ;; Add advice to track prompts when sent
+  (advice-add 'agent-shell--send-command :before #'agent-shell-manager--track-prompt))
 
 ;; Set up the hooks when this file is loaded
 (with-eval-after-load 'agent-shell
