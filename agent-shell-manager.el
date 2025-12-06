@@ -136,6 +136,10 @@ Key bindings:
   (setq tabulated-list-sort-key (cons "Last Activity" nil))
   (tabulated-list-init-header)
   
+  ;; Cancel any existing timer before creating a new one
+  (when agent-shell-manager--refresh-timer
+    (cancel-timer agent-shell-manager--refresh-timer))
+
   ;; Set up auto-refresh timer (refresh every 2 seconds)
   (setq agent-shell-manager--refresh-timer
         (run-with-timer 2 2 #'agent-shell-manager-refresh))
