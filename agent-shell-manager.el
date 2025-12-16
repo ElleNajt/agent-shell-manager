@@ -141,8 +141,14 @@ Key bindings:
     (cancel-timer agent-shell-manager--refresh-timer))
 
   ;; Set up auto-refresh timer (refresh every 2 seconds)
+  ;; Use a lambda to ensure proper buffer context
   (setq agent-shell-manager--refresh-timer
-        (run-with-timer 2 2 #'agent-shell-manager-refresh))
+        (run-with-timer 2 2
+                        (lambda ()
+                          (when (and agent-shell-manager--global-buffer
+                                     (buffer-live-p agent-shell-manager--global-buffer))
+                            (with-current-buffer agent-shell-manager--global-buffer
+                              (agent-shell-manager-refresh))))))
   
   ;; Cancel timer when buffer is killed
   (add-hook 'kill-buffer-hook
@@ -376,13 +382,10 @@ Intended to be called from agent-shell hooks."
 
 (defun agent-shell-manager--entries ()
   "Return list of entries for tabulated-list."
-  (let* ((buffers (seq-filter
-                   (lambda (buffer-name)
-                     (buffer-live-p (get-buffer buffer-name)))
-                   (agent-shell-buffers)))
+  (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (entries (mapcar
-                   (lambda (buffer-name)
-                     (let* ((buffer (get-buffer buffer-name))
+                   (lambda (buffer)
+                     (let* ((buffer-name (buffer-name buffer))
                             (status (agent-shell-manager--get-status buffer))
                             (session (agent-shell-manager--get-session-status buffer))
                             (mode (agent-shell-manager--get-session-mode buffer))
@@ -401,14 +404,16 @@ Intended to be called from agent-shell hooks."
                    buffers)))
     entries))
 
-(defun agent-shell-manager-refresh ()
-  "Refresh the buffer list."
+(defun agent-shell-manager-refresh (&optional _arg)
+  "Refresh the buffer list.
+Optional argument _ARG is ignored (for timer compatibility)."
   (interactive)
   (when (and agent-shell-manager--global-buffer
              (buffer-live-p agent-shell-manager--global-buffer))
     (with-current-buffer agent-shell-manager--global-buffer
-      (setq tabulated-list-entries (agent-shell-manager--entries))
-      (tabulated-list-print t))))
+      (when (derived-mode-p 'agent-shell-manager-mode)
+        (setq tabulated-list-entries (agent-shell-manager--entries))
+        (tabulated-list-print t)))))
 
 (defun agent-shell-manager--find-workspace-for-buffer (buffer)
   "Find the workspace/perspective for BUFFER.
